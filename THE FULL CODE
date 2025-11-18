@@ -1,0 +1,238 @@
+// ==UserScript==
+// @name         DATBooster: Chaos Random + Top Cover (Height only, right-anchored, J + Space)
+// @namespace    datbooster-shuffle
+// @version      7.3
+// @description  Chaos random clicker + top cover with adjustable HEIGHT only. Width stays full (right-anchored). J = Chaos, Space = toggle cover.
+// @match        https://boosterprep.com/*
+// @match        https://*.boosterprep.com/*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  // ---------- Utils ----------
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+
+  // ---------- Chaos random (click inside left list) ----------
+  function findSidebarBox() {
+    const candidates = ['aside', 'nav', '[data-testid="question-list"]', '[class*="Side"]', '[class*="List"]'];
+    for (const sel of candidates) {
+      const el = document.querySelector(sel);
+      if (!el) continue;
+      try {
+        const cs = getComputedStyle(el);
+        if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) return el;
+      } catch {}
+    }
+
+    // fallback: narrow scrollable column on left
+    const all = Array.from(document.querySelectorAll('div, aside, nav')).filter(el => {
+      try {
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return r.left >= 0 && r.left < window.innerWidth * 0.6 &&
+               r.height > 180 && r.width < window.innerWidth * 0.6 &&
+               (cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
+               el.scrollHeight > el.clientHeight;
+      } catch { return false; }
+    });
+    all.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left || a.clientWidth - b.clientWidth);
+    return all[0] || null;
+  }
+
+  async function chaosJump() {
+    const box = findSidebarBox();
+    if (!box) { alert('No sidebar found. Open a session where the question list is visible.'); return; }
+
+    const max = Math.max(0, box.scrollHeight - box.clientHeight);
+    box.scrollTop = Math.floor(Math.random() * (max + 1));
+    await sleep(160);
+
+    const rect = box.getBoundingClientRect();
+    const padX = Math.min(24, rect.width * 0.12);
+    const padY = Math.min(12, rect.height * 0.10);
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const x = Math.floor(rect.left + padX + Math.random() * Math.max(1, rect.width - padX * 2));
+      const y = Math.floor(rect.top + padY + Math.random() * Math.max(1, rect.height - padY * 2));
+      const el = document.elementFromPoint(x, y);
+
+      if (!el) { await sleep(100); continue; }
+
+      let cur = el;
+      for (let i = 0; i < 8 && cur; i++, cur = cur.parentElement) {
+        if (!box.contains(cur)) break;
+        const role = (cur.getAttribute && cur.getAttribute('role')) || '';
+        if (cur.tagName === 'A' || role.toLowerCase() === 'button' || cur.onclick) {
+          cur.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, button: 0 }));
+          return;
+        }
+      }
+
+      const nudge = Math.floor(rect.height * (0.25 + Math.random() * 0.5) *
+                      (Math.random() < 0.5 ? -1 : 1));
+      box.scrollTop = clamp(box.scrollTop + nudge, 0, max);
+      await sleep(140);
+    }
+
+    // last fallback
+    const cx = Math.floor(rect.left + rect.width / 2);
+    const cy = Math.floor(rect.top + rect.height / 2);
+    const centerEl = document.elementFromPoint(cx, cy);
+
+    if (centerEl) {
+      let cur = centerEl;
+      for (let i = 0; i < 8 && cur; i++, cur = cur.parentElement) {
+        if (!box.contains(cur)) break;
+        const role = (cur.getAttribute && cur.getAttribute('role')) || '';
+        if (cur.tagName === 'A' || role.toLowerCase() === 'button' || cur.onclick) {
+          cur.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, button: 0 }));
+          return;
+        }
+      }
+    }
+  }
+
+  // ---------- Top cover (height only, right-anchored width = 100%) ----------
+  const TOP_ID = 'db-top-cover';
+  const KEY_TOP_ENABLED = 'db_cover_top_enabled_v11';
+  const KEY_TOP_HEIGHT_PCT = 'db_cover_top_height_pct_v11';
+
+  function getTopHeightPct() {
+    const v = parseFloat(localStorage.getItem(KEY_TOP_HEIGHT_PCT));
+    return Number.isFinite(v) ? clamp(v, 0, 100) : 8;
+  }
+  function setTopHeightPct(p) {
+    localStorage.setItem(KEY_TOP_HEIGHT_PCT, String(clamp(Number(p) || 8, 0, 100)));
+    applyCover();
+  }
+  function isTopEnabled() {
+    const s = localStorage.getItem(KEY_TOP_ENABLED);
+    return s === null ? true : s !== '0';
+  }
+  function setTopEnabled(on) {
+    localStorage.setItem(KEY_TOP_ENABLED, on ? '1' : '0');
+    applyCover();
+  }
+
+  function ensureTop() {
+    let el = document.getElementById(TOP_ID);
+    if (!el) { el = document.createElement('div'); el.id = TOP_ID; document.body.appendChild(el); }
+    return el;
+  }
+
+  function applyCover() {
+    const topOn = isTopEnabled();
+    const hPct = getTopHeightPct();
+
+    const top = ensureTop();
+    Object.assign(top.style, {
+      position: 'fixed',
+      top: '0',
+      left: 'auto',
+      right: '0', // keep anchored on the right
+      width: '100vw', // width is fixed now
+      height: topOn ? `${hPct}vh` : '0',
+      background: topOn ? '#000' : 'transparent',
+      zIndex: 2147483647,
+      pointerEvents: topOn ? 'auto' : 'none',
+      transition: 'height 120ms ease'
+    });
+  }
+
+  // ---------- UI ----------
+  function addUI() {
+    if (document.getElementById('db-chaos-ui')) return;
+    applyCover();
+
+    const wrap = document.createElement('div');
+    wrap.id = 'db-chaos-ui';
+    Object.assign(wrap.style, {
+      position: 'fixed',
+      right: '0px',
+      top: '70%',
+      transform: 'translateY(-50%)',
+      zIndex: 2147483646,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '6px',
+      padding: '4px'
+    });
+
+    const mkBtn = (label, onClick) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      Object.assign(b.style, {
+        padding: '6px 8px',
+        borderRadius: '6px',
+        border: '1px solid #ccc',
+        background: '#fff',
+        fontSize: '12px',
+        cursor: 'pointer',
+        boxShadow: '0 1px 6px rgba(0,0,0,0.12)',
+        whiteSpace: 'nowrap',
+        minWidth: '56px',
+        textAlign: 'center'
+      });
+      b.addEventListener('click', onClick);
+      return b;
+    };
+
+    // Buttons
+    const chaosBtn = mkBtn('Chaos', () => chaosJump());
+    const topToggle = mkBtn(isTopEnabled() ? 'Top: ON' : 'Top: OFF', () => {
+      const next = !isTopEnabled();
+      setTopEnabled(next);
+      topToggle.textContent = next ? 'Top: ON' : 'Top: OFF';
+    });
+    const setTopHBtn = mkBtn(`T:${getTopHeightPct()}%`, () => {
+      const val = prompt('Top cover HEIGHT % (0–100):', String(getTopHeightPct()));
+      if (val == null) return;
+      setTopHeightPct(val);
+      setTopHBtn.textContent = `T:${getTopHeightPct()}%`;
+    });
+
+    wrap.appendChild(chaosBtn);
+    wrap.appendChild(topToggle);
+    wrap.appendChild(setTopHBtn);
+    document.body.appendChild(wrap);
+  }
+
+  // ---------- Keyboard Shortcuts ----------
+  window.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName) || '';
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+
+    // Space → toggle Top cover
+    if (e.key === ' ') {
+      e.preventDefault();
+      const next = !isTopEnabled();
+      setTopEnabled(next);
+      const btn = document.querySelector('#db-chaos-ui button:nth-child(2)');
+      if (btn) btn.textContent = next ? 'Top: ON' : 'Top: OFF';
+      return;
+    }
+
+    // J → trigger Chaos
+    if (e.key.toLowerCase() === 'j') {
+      e.preventDefault();
+      chaosJump();
+      return;
+    }
+  });
+
+  // ---------- SPA watch ----------
+  const mo = new MutationObserver(() => {
+    addUI();
+    applyCover();
+  });
+  mo.observe(document.documentElement, { childList: true, subtree: true });
+
+  // Init
+  addUI();
+  applyCover();
+})();
